@@ -78,7 +78,8 @@ void actionDim(uint8_t deviceId, int b) //1-255 range
   yourVal[deviceId-1] = b;
 }
 
-void setup() {
+void setup(void)
+{
   Serial.begin(115200);
   prepareIds();
   
@@ -113,8 +114,7 @@ void setup() {
       // initialise pins if needed 
       startHttpServer();
     }
-  } else
-  {
+  } else {
     while (1) { //endless loop
       Serial.println("Cannot connect to WiFi!");
       Serial.print("Please check that the credentials for network ");
@@ -125,14 +125,15 @@ void setup() {
   }
 }
 
-void loop() {
+void loop(void)
+{
   server.handleClient();
   delay(1);
   
   
   // if there's data available, read a packet
   // check if the WiFi and UDP connections were successful
-    if(udpConnected){    
+  if (udpConnected) {    
       // if there’s data available, read a packet
       int packetSize = UDP.parsePacket();
       

@@ -7,10 +7,13 @@
  */
 /*
  * @title Espalexa library
- * @version 2.1.2
+ * @version 2.2.0
  * @author Christian Schwinne
  * @license MIT
  */
+#include <WiFiUdp.h>
+#include "Espalexa.h"
+
 //#define DEBUG_ESPALEXA
  
 #ifdef DEBUG_ESPALEXA
@@ -20,47 +23,57 @@
  #define DEBUG(x)
  #define DEBUGLN(x)
 #endif
- 
-#ifdef ARDUINO_ARCH_ESP32
-  #include "dependencies/webserver/WebServer.h" // https://github.com/bbx10/WebServer_tng
-  #include <WiFi.h>
-#else
-  #include <ESP8266WebServer.h>
-  #include <ESP8266WiFi.h>
-#endif
-#include <WiFiUdp.h>
-#include "Espalexa.h"
 
-// this limit only has memory reasons, set it higher should you need to
-#define MAXDEVICES    (16) 
-
-uint8_t currentDeviceCount = 0;
-
-EspalexaDevice* devices[MAXDEVICES] = {};
-
-//Keep in mind that Device IDs go from 1 to DEVICES, cpp arrays from 0 to DEVICES-1!!
+// Keep in mind that Device IDs go from 1 to DEVICES, cpp arrays from 0 to DEVICES-1!!
 
 WiFiUDP UDP;
-static const IPAddress ipMulti(239, 255, 255, 250);
-static const unsigned int portMulti = 1900;      // local port to listen on
-bool udpConnected = false;
-char packetBuffer[256]; // buffer to hold incoming packet,
-Espalexa* instance = NULL;
+Espalexa* g_instance = NULL;
 
-Espalexa::Espalexa(void)
+void serverPage(void)
 {
-  instance = this;
+  if ( g_instance ) {
+    g_instance->servePage();
+  }
+}
+
+void serverNotFound(void)
+{
+  if ( g_instance ) {
+    g_instance->serveNotFound();
+  }
+}
+
+void serverDescription(void)
+{
+  if ( g_instance ) {
+    g_instance->serveDescription();
+  }
+}
+
+Espalexa::Espalexa(void) :
+IP(239, 255, 255, 250),
+port(1900),
+udpConnected(false),
+deviceCount(0),
+server(NULL),
+devices()
+{
+  g_instance = this;
+  for ( uint32_t i=0; i<ALEXA_MAX_DEVICES; i++ ) {
+    devices[i] = NULL;
+  }
 }
 
 Espalexa::~Espalexa(void)
 {
+  for ( uint32_t i=0; i<ALEXA_MAX_DEVICES; i++ ) {
+    if ( NULL==devices[i] ) continue;
+    delete devices[i];
+    devices[i] = NULL;
+  }
 }
 
-#ifdef ARDUINO_ARCH_ESP32
 bool Espalexa::begin(WebServer* externalServer)
-#else
-bool Espalexa::begin(ESP8266WebServer* externalServer)
-#endif
 {
   DEBUGLN("Espalexa Begin...");
   
@@ -86,13 +99,14 @@ void Espalexa::loop(void)
     const int packetSize = UDP.parsePacket();
       
     if (packetSize>0) {
+      char packetBuffer[256]; // buffer to hold incoming packet
       DEBUGLN("Got UDP!");
       const int len = UDP.read(packetBuffer, sizeof(packetBuffer)-1);
       if (len > 0) {
         packetBuffer[len] = 0;
       }
 
-      String request = packetBuffer;
+      const String request(packetBuffer);
       DEBUGLN(request);
       if (request.indexOf("M-SEARCH") >= 0) {
         if ( (request.indexOf("upnp:rootdevice")>0) || 
@@ -114,30 +128,27 @@ String Espalexa::getMac(void)
 
 bool Espalexa::addDevice(EspalexaDevice* device)
 {
-  if ( !device ) return false;
+  if ( !device || (deviceCount>=ALEXA_MAX_DEVICES)) return false;
+  
+  devices[deviceCount++] = device;
+  device->setID(deviceCount);
+  DEBUG("Added device ");
+  DEBUGLN(deviceCount);
 
-  DEBUG("Adding device ");
-  DEBUGLN((currentDeviceCount+1));
-  if (currentDeviceCount >= MAXDEVICES) return false;
-  device->setID(currentDeviceCount+1);
-  devices[currentDeviceCount] = device;
-  currentDeviceCount++;
   return true;
 }
 
 bool Espalexa::addDevice(const char* deviceName, CallbackBriFunction callback, const uint8_t value)
 {
-  if ( !deviceName ) return false;
-  DEBUG("Constructing device ");
-  DEBUGLN((currentDeviceCount+1));
-  if (currentDeviceCount >= MAXDEVICES) return false;
-  EspalexaDevice* d = new EspalexaDevice(deviceName, callback, value);
-  return addDevice(d);
+  if ( !deviceName || (deviceCount>=ALEXA_MAX_DEVICES)) return false;
+  
+  EspalexaDevice* device = new EspalexaDevice(deviceName, callback, value);
+  return addDevice(device);
 }
 
 String Espalexa::deviceJsonString(const uint8_t deviceId)
 {
-  if (deviceId < 1 || deviceId > currentDeviceCount) return "{}"; // error
+  if (deviceId < 1 || deviceId > deviceCount) return "{}"; // error
 
   String res = "{";
   res += "\"type\":\"Extended color light\",";
@@ -187,7 +198,7 @@ bool Espalexa::handleAlexaApiCall(String req, String body) // basic implementati
     return true;
   }
   
-  int pos = req.indexOf("lights");
+  const int pos = req.indexOf("lights");
   if (pos > 0) //client wants light info
   {
     const int tempDeviceId = req.substring(pos+7).toInt();
@@ -197,12 +208,12 @@ bool Espalexa::handleAlexaApiCall(String req, String body) // basic implementati
     {
       DEBUGLN("lAll");
       String jsonTemp = "{";
-      for (int i = 0; i<currentDeviceCount; i++)
+      for (uint32_t i = 0; i<deviceCount; i++)
       {
         const uint8_t id = devices[i]->getID(); // (i+1);
         jsonTemp += "\"" + String(id) + "\":";
         jsonTemp += deviceJsonString(id);
-        jsonTemp += (i<(currentDeviceCount-1))  ? "," : "";
+        jsonTemp += (i<(deviceCount-1))  ? "," : "";
       }
       jsonTemp += "}";
       server->send(200, "application/json", jsonTemp);
@@ -219,45 +230,45 @@ bool Espalexa::handleAlexaApiCall(String req, String body) // basic implementati
   return true;
 }
 
-void servePage(void)
+void Espalexa::servePage(void)
 {
-  if ( !(instance && instance->server) ) return;
+  if ( !server ) return;
 
   DEBUGLN("HTTP Req espalexa ...\n");
   String res = "Hello from Espalexa!\r\n\r\n";
-  for (int i=0; i<currentDeviceCount; i++)
+  for (uint32_t i=0; i<deviceCount; i++)
   {
     const uint8_t id = devices[i]->getID(); // (i+1);
     res += "Value of device " + String(id) + " (" + devices[i]->getName() + "): " + String(devices[i]->getValue()) + "\r\n";
   }
   res += "\r\nFree Heap: " + String(ESP.getFreeHeap());
   res += "\r\nUptime: " + String(millis());
-  res += "\r\n\r\nEspalexa library V2.1.2 by Christian Schwinne 2018";
-  instance->server->send(200, "text/plain", res);
+  res += "\r\n\r\nEspalexa library V2.2.0 by Christian Schwinne 2018";
+  server->send(200, "text/plain", res);
 }
 
-void serveNotFound(void)
+void Espalexa::serveNotFound(void)
 {
-  if ( !(instance && instance->server) ) return;
+  if ( !server ) return;
 
   DEBUGLN("Not-Found HTTP call:");
-  DEBUGLN("URI: " + instance->server->uri());
-  DEBUGLN("Body: " + instance->server->arg(0));
-  if(!instance->handleAlexaApiCall(instance->server->uri(),instance->server->arg(0))) {
-    instance->server->send(404, "text/plain", "Not Found (espalexa-internal)");
+  DEBUGLN("URI: " + server->uri());
+  DEBUGLN("Body: " + server->arg(0));
+  if ( !handleAlexaApiCall(server->uri(), server->arg(0)) ) {
+    server->send(404, "text/plain", "Not Found (espalexa-internal)");
   }
 }
 
-void serveDescription(void)
+void Espalexa::serveDescription(void)
 {
   DEBUGLN("# Responding to description.xml ... #\n");
   IPAddress localIP = WiFi.localIP();
   char s[16];
-  if ( !(instance && instance->server) ) return;
+  if ( !server ) return;
 
   sprintf(s, "%d.%d.%d.%d", localIP[0], localIP[1], localIP[2], localIP[3]);
     
-  const String escapedMac = instance->getMac();
+  const String escapedMac = getMac();
 
   const String setup_xml = "<?xml version=\"1.0\" ?>"
           "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">"
@@ -294,7 +305,7 @@ void serveDescription(void)
           "</device>"
           "</root>";
             
-  instance->server->send(200, "text/xml", setup_xml.c_str());
+  server->send(200, "text/xml", setup_xml.c_str());
         
   DEBUG("Sending :");
   DEBUGLN(setup_xml);
@@ -302,19 +313,14 @@ void serveDescription(void)
 
 void Espalexa::startHttpServer(void)
 {
-  if (server == nullptr) {
-#ifdef ARDUINO_ARCH_ESP32
+  if ( !server ) {
     server = new WebServer(80);
-#else
-    server = new ESP8266WebServer(80);  
-#endif
-    server->onNotFound(serveNotFound);
+    if ( !server ) return;
   }
-  
-  if ( !server ) return;
 
-  server->on("/espalexa", HTTP_GET, servePage);
-  server->on("/description.xml", HTTP_GET, serveDescription);
+  server->onNotFound(serverNotFound);
+  server->on("/espalexa", HTTP_GET, serverPage);
+  server->on("/description.xml", HTTP_GET, serverDescription);
   server->begin();
 }
 
@@ -360,13 +366,13 @@ void Espalexa::alexaValue(const uint8_t deviceId, const uint8_t value)
 
 void Espalexa::respondToSearch(void)
 {
-  if ( !(instance && instance->server) ) return;
+  if ( !server ) return;
 
   const IPAddress localIP = WiFi.localIP();
   char s[16];
   snprintf(s, sizeof(s), "%d.%d.%d.%d", localIP[0], localIP[1], localIP[2], localIP[3]);
 
-  const String escapedMac = instance->getMac();
+  const String escapedMac = getMac();
   const String response = 
     "HTTP/1.1 200 OK\r\n"
     "EXT:\r\n"
@@ -397,9 +403,9 @@ String Espalexa::boolString(const bool st)
 bool Espalexa::connectUDP(void)
 {
 #ifdef ARDUINO_ARCH_ESP32
-  return UDP.beginMulticast(ipMulti, portMulti);
+  return UDP.beginMulticast(IP, port);
 #else
-  return UDP.beginMulticast(WiFi.localIP(), ipMulti, portMulti);
+  return UDP.beginMulticast(WiFi.localIP(), IP, port);
 #endif
 }
 

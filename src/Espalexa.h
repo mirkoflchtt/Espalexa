@@ -1,14 +1,19 @@
 ﻿#ifndef Espalexa_h
 #define Espalexa_h
-
+#include <stdint.h>
 #include "Arduino.h"
-//#include <WiFiUDP.h>
 
 #ifdef ARDUINO_ARCH_ESP32
 #include "dependencies/webserver/WebServer.h"
+#include <WiFi.h>
 #else
 #include <ESP8266WebServer.h>
+#include <ESP8266WiFi.h>
+typedef ESP8266WebServer WebServer;
 #endif
+
+// this limit only has memory reasons, set it higher should you need to
+#define ALEXA_MAX_DEVICES    (16) 
 
 typedef void (*CallbackBriFunction) (
   const uint8_t deviceID, const char* deviceName, const uint8_t value);
@@ -45,34 +50,39 @@ public:
 class Espalexa {
 private:
   void startHttpServer(void);
+  String getMac(void);
   String deviceJsonString(const uint8_t deviceId);
-  void handleDescriptionXml(void);
+
+  bool addDevice(EspalexaDevice* device);
+
+  bool handleAlexaApiCall(String req, String body);
   void respondToSearch(void);
   String boolString(const bool st);
   bool connectUDP(void);
+
   void alexaOn(const uint8_t deviceId);
   void alexaOff(const uint8_t deviceId);
   void alexaValue(const uint8_t deviceId, const uint8_t value);
 
+  const IPAddress IP;
+  const uint32_t  port;
+  bool udpConnected;
+  uint32_t deviceCount;
+  WebServer* server;
+  EspalexaDevice* devices[ALEXA_MAX_DEVICES];
+
 public:
   Espalexa(void);
   ~Espalexa(void);
-  #ifdef ARDUINO_ARCH_ESP32
-  WebServer* server;
-  bool begin(WebServer* externalServer=nullptr);
-  #else
-  ESP8266WebServer* server;
-  bool begin(ESP8266WebServer* externalServer=nullptr);
-  #endif
+  bool begin(WebServer* externalServer=NULL);
 
-  String getMac(void);
-
-  bool addDevice(EspalexaDevice* device);
   bool addDevice(const char* deviceName, CallbackBriFunction callback, const uint8_t value=0);
 
   void loop(void);
-    
-  bool handleAlexaApiCall(String req, String body);
+
+  void servePage(void);
+  void serveNotFound(void);
+  void serveDescription(void);
 };
 
 #endif
