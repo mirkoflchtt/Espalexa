@@ -10,56 +10,69 @@
 #include <ESP8266WebServer.h>
 #endif
 
-typedef void (*CallbackBriFunction) (uint8_t br);
+typedef void (*CallbackBriFunction) (
+  const uint8_t deviceID, const char* deviceName, const uint8_t value);
 
 class EspalexaDevice {
 private:
-		String _deviceName;
-		CallbackBriFunction _callback;
-		uint8_t _val, _val_last;
+  String _deviceName;
+  CallbackBriFunction _callback;
+  uint8_t _deviceID;
+  uint8_t _val, _val_last;
+
 public:
-		EspalexaDevice();
-		~EspalexaDevice();
-		EspalexaDevice(String deviceName, CallbackBriFunction gnCallback, uint8_t initialValue =0);
-		
-		String getName();
-		uint8_t getValue();
-		
-		void setValue(uint8_t bri);
-		
-		void doCallback();
-		
-		uint8_t getLastValue(); //last value that was not off (1-255)
+  EspalexaDevice(void);
+  ~EspalexaDevice(void);
+  EspalexaDevice(
+    const char* deviceName,
+    CallbackBriFunction callback,
+    const uint8_t value=0);
+    
+  String   getName(void);
+  void     setName(const String name);
+
+  uint8_t  getValue(void);  
+  void     setValue(const uint8_t value);
+  
+  uint8_t  getID(void);
+  void     setID(const uint8_t id);
+
+  void     doCallback(void);
+  
+  uint8_t  getLastValue(void); //last value that was not off (1-255)
 };
 
 class Espalexa {
 private:
-		void startHttpServer();
-		String deviceJsonString(uint8_t deviceId);
-        void handleDescriptionXml();
-		void respondToSearch();
-		String boolString(bool st);
-		bool connectUDP();
-		void alexaOn(uint8_t deviceId);
-		void alexaOff(uint8_t deviceId);
-		void alexaDim(uint8_t deviceId, uint8_t briL);
+  void startHttpServer(void);
+  String deviceJsonString(const uint8_t deviceId);
+  void handleDescriptionXml(void);
+  void respondToSearch(void);
+  String boolString(const bool st);
+  bool connectUDP(void);
+  void alexaOn(const uint8_t deviceId);
+  void alexaOff(const uint8_t deviceId);
+  void alexaValue(const uint8_t deviceId, const uint8_t value);
+
 public:
-		Espalexa();
-		~Espalexa();
-		#ifdef ARDUINO_ARCH_ESP32
-		WebServer* server;
-		bool begin(WebServer* externalServer=nullptr);
-		#else
-		ESP8266WebServer* server;
-	    bool begin(ESP8266WebServer* externalServer=nullptr);
-		#endif
+  Espalexa(void);
+  ~Espalexa(void);
+  #ifdef ARDUINO_ARCH_ESP32
+  WebServer* server;
+  bool begin(WebServer* externalServer=nullptr);
+  #else
+  ESP8266WebServer* server;
+  bool begin(ESP8266WebServer* externalServer=nullptr);
+  #endif
 
-		bool addDevice(EspalexaDevice* d);
-		bool addDevice(String deviceName, CallbackBriFunction callback, uint8_t initialValue=0);
+  String getMac(void);
 
-		void loop();
-		
-		bool handleAlexaApiCall(String req, String body);
+  bool addDevice(EspalexaDevice* device);
+  bool addDevice(const char* deviceName, CallbackBriFunction callback, const uint8_t value=0);
+
+  void loop(void);
+    
+  bool handleAlexaApiCall(String req, String body);
 };
 
 #endif

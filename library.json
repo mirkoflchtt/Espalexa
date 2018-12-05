@@ -4,6 +4,7 @@
 "keywords": "alexa, esp32, esp8266, control, dimming",
 "description": "Library to control an ESP module with the Alexa voice assistant",
 "url": "https://github.com/Aircoookie/Espalexa",
+"version": "2.1.2",
 "authors":
 [
 {

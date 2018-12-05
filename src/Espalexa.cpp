@@ -14,43 +14,47 @@
 //#define DEBUG_ESPALEXA
  
 #ifdef DEBUG_ESPALEXA
- #define DEBUG(x)  Serial.print (x)
- #define DEBUGLN(x) Serial.println (x)
+ #define DEBUG(x)   Serial.print(x)
+ #define DEBUGLN(x) Serial.println(x)
 #else
  #define DEBUG(x)
  #define DEBUGLN(x)
 #endif
  
 #ifdef ARDUINO_ARCH_ESP32
-#include "dependencies/webserver/WebServer.h" //https://github.com/bbx10/WebServer_tng
-#include <WiFi.h>
+  #include "dependencies/webserver/WebServer.h" // https://github.com/bbx10/WebServer_tng
+  #include <WiFi.h>
 #else
-#include <ESP8266WebServer.h>
-#include <ESP8266WiFi.h>
+  #include <ESP8266WebServer.h>
+  #include <ESP8266WiFi.h>
 #endif
 #include <WiFiUdp.h>
 #include "Espalexa.h"
 
-#define MAXDEVICES 20 //this limit only has memory reasons, set it higher should you need to
+// this limit only has memory reasons, set it higher should you need to
+#define MAXDEVICES    (16) 
 
 uint8_t currentDeviceCount = 0;
 
 EspalexaDevice* devices[MAXDEVICES] = {};
+
 //Keep in mind that Device IDs go from 1 to DEVICES, cpp arrays from 0 to DEVICES-1!!
 
 WiFiUDP UDP;
-IPAddress ipMulti(239, 255, 255, 250);
+static const IPAddress ipMulti(239, 255, 255, 250);
+static const unsigned int portMulti = 1900;      // local port to listen on
 bool udpConnected = false;
-unsigned int portMulti = 1900;      // local port to listen on
-char packetBuffer[255]; //buffer to hold incoming packet,
-String escapedMac=""; //lowercase mac address
-Espalexa* instance;
+char packetBuffer[256]; // buffer to hold incoming packet,
+Espalexa* instance = NULL;
 
-Espalexa::Espalexa() { //constructor
-	instance = this;
+Espalexa::Espalexa(void)
+{
+  instance = this;
 }
 
-Espalexa::~Espalexa(){/*nothing to destruct*/}
+Espalexa::~Espalexa(void)
+{
+}
 
 #ifdef ARDUINO_ARCH_ESP32
 bool Espalexa::begin(WebServer* externalServer)
@@ -58,93 +62,126 @@ bool Espalexa::begin(WebServer* externalServer)
 bool Espalexa::begin(ESP8266WebServer* externalServer)
 #endif
 {
-	DEBUGLN("Espalexa Begin...");
-	escapedMac = WiFi.macAddress();
-	escapedMac.replace(":", "");
-	escapedMac.toLowerCase();
+  DEBUGLN("Espalexa Begin...");
   
-	server = externalServer;
-    udpConnected = connectUDP();
+  server = externalServer;
+  udpConnected = connectUDP();
     
-    if (udpConnected){
-		
-      startHttpServer();
-	  DEBUGLN("Done");
-	  return true;
-    }
-	DEBUGLN("Failed");
-	return false;
+  if (udpConnected) {
+    startHttpServer();
+    DEBUGLN("Done");
+    return true;
+  }
+  DEBUGLN("Failed");
+  return false;
 }
 
-void Espalexa::loop() {
-	server->handleClient();
-	
-    if(udpConnected){    
-      int packetSize = UDP.parsePacket();
-      
-      if(packetSize) {
-		DEBUGLN("Got UDP!");
-        int len = UDP.read(packetBuffer, 254);
-        if (len > 0) {
-            packetBuffer[len] = 0;
-        }
+void Espalexa::loop(void)
+{
+  if (server) {
+    server->handleClient();
+  }
 
-        String request = packetBuffer;
-		DEBUGLN(request);
-        if(request.indexOf("M-SEARCH") >= 0) {
-          if(request.indexOf("upnp:rootdevice") > 0 || request.indexOf("device:basic:1") > 0) {
-              DEBUGLN("Responding search req...");
-              respondToSearch();
-          }
+  if (udpConnected) {    
+    const int packetSize = UDP.parsePacket();
+      
+    if (packetSize>0) {
+      DEBUGLN("Got UDP!");
+      const int len = UDP.read(packetBuffer, sizeof(packetBuffer)-1);
+      if (len > 0) {
+        packetBuffer[len] = 0;
+      }
+
+      String request = packetBuffer;
+      DEBUGLN(request);
+      if (request.indexOf("M-SEARCH") >= 0) {
+        if ( (request.indexOf("upnp:rootdevice")>0) || 
+             (request.indexOf("device:basic:1")>0) ) {
+          respondToSearch();
         }
       }
     }
+  }
 }
 
-bool Espalexa::addDevice(EspalexaDevice* d)
+String Espalexa::getMac(void)
 {
-	DEBUG("Adding device ");
-	DEBUGLN((currentDeviceCount+1));
-	if (currentDeviceCount >= MAXDEVICES) return false;
-	devices[currentDeviceCount] = d;
-	currentDeviceCount++;
-	return true;
+  String res = WiFi.macAddress();
+  res.replace(":", "");
+  res.toLowerCase();
+  return res;
 }
 
-bool Espalexa::addDevice(String deviceName, CallbackBriFunction callback, uint8_t initialValue)
+bool Espalexa::addDevice(EspalexaDevice* device)
 {
-	DEBUG("Constructing device ");
-	DEBUGLN((currentDeviceCount+1));
-	if (currentDeviceCount >= MAXDEVICES) return false;
-	EspalexaDevice* d = new EspalexaDevice(deviceName, callback, initialValue);
-	return addDevice(d);
+  if ( !device ) return false;
+
+  DEBUG("Adding device ");
+  DEBUGLN((currentDeviceCount+1));
+  if (currentDeviceCount >= MAXDEVICES) return false;
+  device->setID(currentDeviceCount+1);
+  devices[currentDeviceCount] = device;
+  currentDeviceCount++;
+  return true;
 }
 
-String Espalexa::deviceJsonString(uint8_t deviceId)
+bool Espalexa::addDevice(const char* deviceName, CallbackBriFunction callback, const uint8_t value)
 {
-  if (deviceId < 1 || deviceId > currentDeviceCount) return "{}"; //error
-  return "{\"type\":\"Extended color light\",\"manufacturername\":\"OpenSource\",\"swversion\":\"0.1\",\"name\":\""+ devices[deviceId-1]->getName() +"\",\"uniqueid\":\""+ WiFi.macAddress() +"-"+ (deviceId+1) +"\",\"modelid\":\"LST001\",\"state\":{\"on\":"+ boolString(devices[deviceId-1]->getValue()) +",\"bri\":"+ (String)(devices[deviceId-1]->getLastValue()-1) +",\"xy\":[0.00000,0.00000],\"colormode\":\"hs\",\"effect\":\"none\",\"ct\":500,\"hue\":0,\"sat\":0,\"alert\":\"none\",\"reachable\":true}}";
+  if ( !deviceName ) return false;
+  DEBUG("Constructing device ");
+  DEBUGLN((currentDeviceCount+1));
+  if (currentDeviceCount >= MAXDEVICES) return false;
+  EspalexaDevice* d = new EspalexaDevice(deviceName, callback, value);
+  return addDevice(d);
 }
 
-bool Espalexa::handleAlexaApiCall(String req, String body) //basic implementation of Philips hue api functions needed for basic Alexa control
+String Espalexa::deviceJsonString(const uint8_t deviceId)
 {
+  if (deviceId < 1 || deviceId > currentDeviceCount) return "{}"; // error
+
+  String res = "{";
+  res += "\"type\":\"Extended color light\",";
+  res += "\"manufacturername\":\"OpenSource\",\"swversion\":\"0.1\",";
+  res += "\"name\":\"" + devices[deviceId-1]->getName() + "\",";
+  res += "\"uniqueid\":\"" + WiFi.macAddress();
+  res += "-" + String(devices[deviceId-1]->getID()) + "\",";
+  res += "\"modelid\":\"LST001\",\"state\":{\"on\":";
+  res += boolString(devices[deviceId-1]->getValue());
+  res += ",\"bri\":";
+  res += String(devices[deviceId-1]->getLastValue()-1);
+  res += ",\"xy\":[0.00000,0.00000],\"colormode\":\"hs\",\"effect\":\"none\",";
+  res += "\"ct\":500,\"hue\":0,\"sat\":0,\"alert\":\"none\",\"reachable\":true}";
+  res += "}";
+  return res;
+}
+
+bool Espalexa::handleAlexaApiCall(String req, String body) // basic implementation of Philips hue api functions needed for basic Alexa control
+{
+  if ( !server ) return false;
+
   DEBUGLN("AlexaApiCall");
-  if (req.indexOf("api") <0) return false; //return if not an API call
+  if ( req.indexOf("api")<0 ) return false; //return if not an API call
   DEBUGLN("ok");
   
-  if (body.indexOf("devicetype") > 0) //client wants a hue api username, we dont care and give static
+  if ( body.indexOf("devicetype")>0 ) //client wants a hue api username, we dont care and give static
   {
     DEBUGLN("devType");
     server->send(200, "application/json", "[{\"success\":{\"username\": \"2WLEDHardQrI3WHYTHoMcXHgEspsM8ZZRpSKtBQr\"}}]");
     return true;
   }
 
-  if (req.indexOf("state") > 0) //client wants to control light
+  if ( req.indexOf("state")>0 ) //client wants to control light
   {
-    int tempDeviceId = req.substring(req.indexOf("lights")+7).toInt();
+    const int tempDeviceId = req.substring(req.indexOf("lights")+7).toInt();
     DEBUG("ls"); DEBUGLN(tempDeviceId);
-    if (body.indexOf("bri")>0) {alexaDim(tempDeviceId, body.substring(body.indexOf("bri") +5).toInt()); return true;}
-    if (body.indexOf("false")>0) {alexaOff(tempDeviceId); return true;}
+    if ( body.indexOf("bri")>0 ) {
+      alexaValue(tempDeviceId, body.substring(body.indexOf("bri")+5).toInt());
+      return true;
+    }
+    if ( body.indexOf("false")>0 ) {
+      alexaOff(tempDeviceId);
+      return true;
+    }
     alexaOn(tempDeviceId);
     
     return true;
@@ -153,7 +190,7 @@ bool Espalexa::handleAlexaApiCall(String req, String body) //basic implementatio
   int pos = req.indexOf("lights");
   if (pos > 0) //client wants light info
   {
-    int tempDeviceId = req.substring(pos+7).toInt();
+    const int tempDeviceId = req.substring(pos+7).toInt();
     DEBUG("l"); DEBUGLN(tempDeviceId);
 
     if (tempDeviceId == 0) //client wants all lights
@@ -162,9 +199,10 @@ bool Espalexa::handleAlexaApiCall(String req, String body) //basic implementatio
       String jsonTemp = "{";
       for (int i = 0; i<currentDeviceCount; i++)
       {
-        jsonTemp += "\"" + String(i+1) + "\":";
-        jsonTemp += deviceJsonString(i+1);
-        if (i < currentDeviceCount-1) jsonTemp += ",";
+        const uint8_t id = devices[i]->getID(); // (i+1);
+        jsonTemp += "\"" + String(id) + "\":";
+        jsonTemp += deviceJsonString(id);
+        jsonTemp += (i<(currentDeviceCount-1))  ? "," : "";
       }
       jsonTemp += "}";
       server->send(200, "application/json", jsonTemp);
@@ -181,37 +219,47 @@ bool Espalexa::handleAlexaApiCall(String req, String body) //basic implementatio
   return true;
 }
 
-void servePage()
+void servePage(void)
 {
-	  DEBUGLN("HTTP Req espalexa ...\n");
-	  String res = "Hello from Espalexa!\r\n\r\n";
-	  for (int i=0; i<currentDeviceCount; i++)
-	  {
-		res += "Value of device " + String(i+1) + " (" + devices[i]->getName() + "): " + String(devices[i]->getValue()) + "\r\n";
-	  }
-	  res += "\r\nFree Heap: " + (String)ESP.getFreeHeap();
-	  res += "\r\nUptime: " + (String)millis();
-	  res += "\r\n\r\nEspalexa library V2.1.2 by Christian Schwinne 2018";
-	  instance->server->send(200, "text/plain", res);
+  if ( !(instance && instance->server) ) return;
+
+  DEBUGLN("HTTP Req espalexa ...\n");
+  String res = "Hello from Espalexa!\r\n\r\n";
+  for (int i=0; i<currentDeviceCount; i++)
+  {
+    const uint8_t id = devices[i]->getID(); // (i+1);
+    res += "Value of device " + String(id) + " (" + devices[i]->getName() + "): " + String(devices[i]->getValue()) + "\r\n";
+  }
+  res += "\r\nFree Heap: " + String(ESP.getFreeHeap());
+  res += "\r\nUptime: " + String(millis());
+  res += "\r\n\r\nEspalexa library V2.1.2 by Christian Schwinne 2018";
+  instance->server->send(200, "text/plain", res);
 }
 
-void serveNotFound()
+void serveNotFound(void)
 {
-	DEBUGLN("Not-Found HTTP call:");
-      DEBUGLN("URI: " + instance->server->uri());
-      DEBUGLN("Body: " + instance->server->arg(0));
-      if(!instance->handleAlexaApiCall(instance->server->uri(),instance->server->arg(0)))
-        instance->server->send(404, "text/plain", "Not Found (espalexa-internal)");
+  if ( !(instance && instance->server) ) return;
+
+  DEBUGLN("Not-Found HTTP call:");
+  DEBUGLN("URI: " + instance->server->uri());
+  DEBUGLN("Body: " + instance->server->arg(0));
+  if(!instance->handleAlexaApiCall(instance->server->uri(),instance->server->arg(0))) {
+    instance->server->send(404, "text/plain", "Not Found (espalexa-internal)");
+  }
 }
 
-void serveDescription()
+void serveDescription(void)
 {
-	DEBUGLN("# Responding to description.xml ... #\n");
-      IPAddress localIP = WiFi.localIP();
-      char s[16];
-      sprintf(s, "%d.%d.%d.%d", localIP[0], localIP[1], localIP[2], localIP[3]);
+  DEBUGLN("# Responding to description.xml ... #\n");
+  IPAddress localIP = WiFi.localIP();
+  char s[16];
+  if ( !(instance && instance->server) ) return;
+
+  sprintf(s, "%d.%d.%d.%d", localIP[0], localIP[1], localIP[2], localIP[3]);
     
-      String setup_xml = "<?xml version=\"1.0\" ?>"
+  const String escapedMac = instance->getMac();
+
+  const String setup_xml = "<?xml version=\"1.0\" ?>"
           "<root xmlns=\"urn:schemas-upnp-org:device-1-0\">"
           "<specVersion><major>1</major><minor>0</minor></specVersion>"
           "<URLBase>http://"+ String(s) +":80/</URLBase>"
@@ -246,31 +294,34 @@ void serveDescription()
           "</device>"
           "</root>";
             
-        instance->server->send(200, "text/xml", setup_xml.c_str());
+  instance->server->send(200, "text/xml", setup_xml.c_str());
         
-        DEBUG("Sending :");
-        DEBUGLN(setup_xml);
+  DEBUG("Sending :");
+  DEBUGLN(setup_xml);
 }
 
-void Espalexa::startHttpServer() {
-	if (server == nullptr) {
-		#ifdef ARDUINO_ARCH_ESP32
-		server = new WebServer(80);
-		#else
-		server = new ESP8266WebServer(80);	
-		#endif
-		server->onNotFound(serveNotFound);
-	}
-	
-    server->on("/espalexa", HTTP_GET, servePage);
-    
-    server->on("/description.xml", HTTP_GET, serveDescription);
-	
-	server->begin();
-}
-
-void Espalexa::alexaOn(uint8_t deviceId)
+void Espalexa::startHttpServer(void)
 {
+  if (server == nullptr) {
+#ifdef ARDUINO_ARCH_ESP32
+    server = new WebServer(80);
+#else
+    server = new ESP8266WebServer(80);  
+#endif
+    server->onNotFound(serveNotFound);
+  }
+  
+  if ( !server ) return;
+
+  server->on("/espalexa", HTTP_GET, servePage);
+  server->on("/description.xml", HTTP_GET, serveDescription);
+  server->begin();
+}
+
+void Espalexa::alexaOn(const uint8_t deviceId)
+{
+  if ( !server ) return;
+
   String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/on\":true}}]";
 
   server->send(200, "text/xml", body.c_str());
@@ -279,8 +330,10 @@ void Espalexa::alexaOn(uint8_t deviceId)
   devices[deviceId-1]->doCallback();
 }
 
-void Espalexa::alexaOff(uint8_t deviceId)
+void Espalexa::alexaOff(const uint8_t deviceId)
 {
+  if ( !server ) return;
+
   String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/on\":false}}]";
 
   server->send(200, "application/json", body.c_str());
@@ -288,103 +341,135 @@ void Espalexa::alexaOff(uint8_t deviceId)
   devices[deviceId-1]->doCallback();
 }
 
-void Espalexa::alexaDim(uint8_t deviceId, uint8_t briL)
+void Espalexa::alexaValue(const uint8_t deviceId, const uint8_t value)
 {
-  String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/bri\":"+ String(briL) +"}}]";
+  if ( !server ) return;
+
+  String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/bri\":"+ String(value) +"}}]";
 
   server->send(200, "application/json", body.c_str());
   
-  if (briL == 255)
+  if (value == 255)
   {
-	 devices[deviceId-1]->setValue(255);
+   devices[deviceId-1]->setValue(255);
   } else {
-	 devices[deviceId-1]->setValue(briL+1); 
+   devices[deviceId-1]->setValue(value+1); 
   }
   devices[deviceId-1]->doCallback();
 }
 
-void Espalexa::respondToSearch() {
-    IPAddress localIP = WiFi.localIP();
-    char s[16];
-    sprintf(s, "%d.%d.%d.%d", localIP[0], localIP[1], localIP[2], localIP[3]);
-
-    String response = 
-      "HTTP/1.1 200 OK\r\n"
-      "EXT:\r\n"
-      "CACHE-CONTROL: max-age=100\r\n" // SSDP_INTERVAL
-      "LOCATION: http://"+ String(s) +":80/description.xml\r\n"
-      "SERVER: FreeRTOS/6.0.5, UPnP/1.0, IpBridge/1.17.0\r\n" // _modelName, _modelNumber
-      "hue-bridgeid: "+ escapedMac +"\r\n"
-      "ST: urn:schemas-upnp-org:device:basic:1\r\n"  // _deviceType
-      "USN: uuid:2f402f80-da50-11e1-9b23-"+ escapedMac +"::upnp:rootdevice\r\n" // _uuid::_deviceType
-      "\r\n";
-
-    UDP.beginPacket(UDP.remoteIP(), UDP.remotePort());
-    #ifdef ARDUINO_ARCH_ESP32
-    UDP.write((uint8_t*)response.c_str(), response.length());
-    #else
-    UDP.write(response.c_str());
-    #endif
-    UDP.endPacket();                    
-}
-
-String Espalexa::boolString(bool st)
+void Espalexa::respondToSearch(void)
 {
-  return(st)?"true":"false";
+  if ( !(instance && instance->server) ) return;
+
+  const IPAddress localIP = WiFi.localIP();
+  char s[16];
+  snprintf(s, sizeof(s), "%d.%d.%d.%d", localIP[0], localIP[1], localIP[2], localIP[3]);
+
+  const String escapedMac = instance->getMac();
+  const String response = 
+    "HTTP/1.1 200 OK\r\n"
+    "EXT:\r\n"
+    "CACHE-CONTROL: max-age=100\r\n" // SSDP_INTERVAL
+    "LOCATION: http://"+ String(s) +":80/description.xml\r\n"
+    "SERVER: FreeRTOS/6.0.5, UPnP/1.0, IpBridge/1.17.0\r\n" // _modelName, _modelNumber
+    "hue-bridgeid: "+ escapedMac +"\r\n"
+    "ST: urn:schemas-upnp-org:device:basic:1\r\n"  // _deviceType
+    "USN: uuid:2f402f80-da50-11e1-9b23-"+ escapedMac +"::upnp:rootdevice\r\n" // _uuid::_deviceType
+    "\r\n";
+
+  DEBUGLN("Responding search req...");
+
+  UDP.beginPacket(UDP.remoteIP(), UDP.remotePort());
+#ifdef ARDUINO_ARCH_ESP32
+  UDP.write((uint8_t*)response.c_str(), response.length());
+#else
+  UDP.write(response.c_str());
+#endif
+  UDP.endPacket();                    
 }
 
-bool Espalexa::connectUDP(){
-  #ifdef ARDUINO_ARCH_ESP32
+String Espalexa::boolString(const bool st)
+{
+  return (st) ? "true" : "false";
+}
+
+bool Espalexa::connectUDP(void)
+{
+#ifdef ARDUINO_ARCH_ESP32
   return UDP.beginMulticast(ipMulti, portMulti);
-  #else
+#else
   return UDP.beginMulticast(WiFi.localIP(), ipMulti, portMulti);
-  #endif
+#endif
 }
 
 //EspalexaDevice Class
 
-EspalexaDevice::EspalexaDevice(){}
-
-EspalexaDevice::EspalexaDevice(String deviceName, CallbackBriFunction gnCallback, uint8_t initialValue) { //constructor
-	
-	_deviceName = deviceName;
-	_callback = gnCallback;
-	_val = initialValue;
-	_val_last = _val;
+EspalexaDevice::EspalexaDevice(void) :
+_deviceName(),
+_callback(NULL),
+_deviceID(0),
+_val(0),
+_val_last(0)
+{
 }
 
-EspalexaDevice::~EspalexaDevice(){/*nothing to destruct*/}
-
-String EspalexaDevice::getName()
-{
-	return _deviceName;
+EspalexaDevice::EspalexaDevice(
+  const char* deviceName, CallbackBriFunction callback, const uint8_t value) :
+_deviceName(deviceName),
+_callback(callback),
+_deviceID(0),
+_val(value),
+_val_last(value)
+{ 
 }
 
-uint8_t EspalexaDevice::getValue()
+EspalexaDevice::~EspalexaDevice(void)
 {
-	return _val;
 }
 
-uint8_t EspalexaDevice::getLastValue()
+String EspalexaDevice::getName(void)
 {
-	if (_val_last == 0) return 255;
-	return _val_last;
+  return _deviceName;
 }
 
-void EspalexaDevice::setValue(uint8_t val)
+void EspalexaDevice::setName(const String name)
 {
-	if (_val != 0)
-	{
-		_val_last = _val;
-	}
-	if (val != 0)
-	{
-		_val_last = val;
-	}
-	_val = val;
+  _deviceName = name;
 }
 
-void EspalexaDevice::doCallback()
+uint8_t EspalexaDevice::getValue(void)
 {
-	_callback(_val);
+  return _val;
+}
+
+uint8_t EspalexaDevice::getLastValue(void)
+{
+  return (_val_last == 0) ? 255 : _val_last;
+}
+
+void EspalexaDevice::setValue(const uint8_t val)
+{
+  if (_val != 0) {
+    _val_last = _val;
+  }
+  if (val != 0) {
+    _val_last = val;
+  }
+  _val = val;
+}
+
+uint8_t EspalexaDevice::getID(void)
+{
+  return _deviceID;
+}
+
+void EspalexaDevice::setID(const uint8_t id)
+{
+  _deviceID = id;
+}
+
+void EspalexaDevice::doCallback(void)
+{
+  _callback(_deviceID, _deviceName.c_str(), _val);
 }
