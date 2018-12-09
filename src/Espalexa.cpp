@@ -81,12 +81,12 @@ bool Espalexa::begin(WebServer* externalServer)
   udpConnected = connectUDP();
     
   if (udpConnected) {
-    startHttpServer();
     DEBUGLN("Done");
-    return true;
+  } else {
+    DEBUGLN("Failed");
   }
-  DEBUGLN("Failed");
-  return false;
+
+  return udpConnected;
 }
 
 void Espalexa::loop(void)
@@ -115,6 +115,12 @@ void Espalexa::loop(void)
         }
       }
     }
+  } else {
+    udpConnected = connectUDP();
+  }
+
+  for (uint32_t i=0; i<deviceCount; i++) {
+    devices[i]->executeCallback();
   }
 }
 
@@ -128,8 +134,10 @@ String Espalexa::getMac(void)
 
 bool Espalexa::addDevice(EspalexaDevice* device)
 {
-  if ( !device || (deviceCount>=ALEXA_MAX_DEVICES)) return false;
-  
+  if ( !device || (deviceCount>=ALEXA_MAX_DEVICES)) {
+    return false;
+  }
+
   devices[deviceCount++] = device;
   device->setID(deviceCount);
   DEBUG("Added device ");
@@ -163,6 +171,7 @@ String Espalexa::deviceJsonString(const uint8_t deviceId)
   res += ",\"xy\":[0.00000,0.00000],\"colormode\":\"hs\",\"effect\":\"none\",";
   res += "\"ct\":500,\"hue\":0,\"sat\":0,\"alert\":\"none\",\"reachable\":true}";
   res += "}";
+
   return res;
 }
 
@@ -170,41 +179,42 @@ bool Espalexa::handleAlexaApiCall(String req, String body) // basic implementati
 {
   if ( !server ) return false;
 
-  DEBUGLN("AlexaApiCall");
-  if ( req.indexOf("api")<0 ) return false; //return if not an API call
-  DEBUGLN("ok");
+  DEBUGLN("AlexaApiCall.. ");
+  if ( req.indexOf("api")<0 ) return false; // return if not an API call
+  DEBUGLN("OK");
   
-  if ( body.indexOf("devicetype")>0 ) //client wants a hue api username, we dont care and give static
+  // client wants a hue api username, we dont care and give static
+  if ( body.indexOf("devicetype")>0 ) 
   {
     DEBUGLN("devType");
     server->send(200, "application/json", "[{\"success\":{\"username\": \"2WLEDHardQrI3WHYTHoMcXHgEspsM8ZZRpSKtBQr\"}}]");
     return true;
   }
 
-  if ( req.indexOf("state")>0 ) //client wants to control light
-  {
-    const int tempDeviceId = req.substring(req.indexOf("lights")+7).toInt();
-    DEBUG("ls"); DEBUGLN(tempDeviceId);
-    if ( body.indexOf("bri")>0 ) {
-      alexaValue(tempDeviceId, body.substring(body.indexOf("bri")+5).toInt());
-      return true;
-    }
-    if ( body.indexOf("false")>0 ) {
-      alexaOff(tempDeviceId);
-      return true;
-    }
-    alexaOn(tempDeviceId);
-    
+  const int pos = req.indexOf("lights");
+  const int tempDeviceId = (pos>0) ? req.substring(pos+7).toInt() : -1;
+  if ( (tempDeviceId<0) || (tempDeviceId>(int)deviceCount) ) {
+    // we dont care about other api commands at this time and send empty JSON
+    server->send(200, "application/json", "{}");
     return true;
   }
-  
-  const int pos = req.indexOf("lights");
-  if (pos > 0) //client wants light info
-  {
-    const int tempDeviceId = req.substring(pos+7).toInt();
-    DEBUG("l"); DEBUGLN(tempDeviceId);
 
-    if (tempDeviceId == 0) //client wants all lights
+  // client wants to control light
+  if ( req.indexOf("state")>0 ) {
+    if ( 0==tempDeviceId ) return true;
+    DEBUG("control light on device #"); DEBUGLN(tempDeviceId);
+    if ( body.indexOf("bri")>0 ) {
+      alexaValue(tempDeviceId, body.substring(body.indexOf("bri")+5).toInt());
+    } else if ( body.indexOf("false")>0 ) {
+      alexaOff(tempDeviceId);
+    } else {
+      alexaOn(tempDeviceId);
+    }
+  } else {
+    // client wants light info
+    DEBUG("info on device #"); DEBUGLN(tempDeviceId);
+
+    if (tempDeviceId == 0) // client wants all lights
     {
       DEBUGLN("lAll");
       String jsonTemp = "{";
@@ -217,16 +227,12 @@ bool Espalexa::handleAlexaApiCall(String req, String body) // basic implementati
       }
       jsonTemp += "}";
       server->send(200, "application/json", jsonTemp);
-    } else //client wants one light (tempDeviceId)
+    } else // client wants one light (tempDeviceId)
     {
       server->send(200, "application/json", deviceJsonString(tempDeviceId));
     }
-    
-    return true;
   }
 
-  //we dont care about other api commands at this time and send empty JSON
-  server->send(200, "application/json", "{}");
   return true;
 }
 
@@ -236,8 +242,7 @@ void Espalexa::servePage(void)
 
   DEBUGLN("HTTP Req espalexa ...\n");
   String res = "Hello from Espalexa!\r\n\r\n";
-  for (uint32_t i=0; i<deviceCount; i++)
-  {
+  for (uint32_t i=0; i<deviceCount; i++) {
     const uint8_t id = devices[i]->getID(); // (i+1);
     res += "Value of device " + String(id) + " (" + devices[i]->getName() + "): " + String(devices[i]->getValue()) + "\r\n";
   }
@@ -326,42 +331,38 @@ void Espalexa::startHttpServer(void)
 
 void Espalexa::alexaOn(const uint8_t deviceId)
 {
-  if ( !server ) return;
+  EspalexaDevice* d = devices[deviceId-1];
+  if ( !(d && server) ) return;
 
-  String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/on\":true}}]";
-
+  const String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/on\":true}}]";
   server->send(200, "text/xml", body.c_str());
 
-  devices[deviceId-1]->setValue(devices[deviceId-1]->getLastValue());
-  devices[deviceId-1]->doCallback();
+  d->setValue(d->getLastValue());
+  d->triggerCallback();
 }
 
 void Espalexa::alexaOff(const uint8_t deviceId)
 {
-  if ( !server ) return;
+  EspalexaDevice* d = devices[deviceId-1];
+  if ( !(d && server) ) return;
 
-  String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/on\":false}}]";
-
+  const String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/on\":false}}]";
   server->send(200, "application/json", body.c_str());
-  devices[deviceId-1]->setValue(0);
-  devices[deviceId-1]->doCallback();
+
+  d->setValue(0);
+  d->triggerCallback();
 }
 
 void Espalexa::alexaValue(const uint8_t deviceId, const uint8_t value)
 {
-  if ( !server ) return;
+  EspalexaDevice* d = devices[deviceId-1];
+  if ( !(d && server) ) return;
 
-  String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/bri\":"+ String(value) +"}}]";
-
+  const String body = "[{\"success\":{\"/lights/"+ String(deviceId) +"/state/bri\":"+ String(value) +"}}]";
   server->send(200, "application/json", body.c_str());
   
-  if (value == 255)
-  {
-   devices[deviceId-1]->setValue(255);
-  } else {
-   devices[deviceId-1]->setValue(value+1); 
-  }
-  devices[deviceId-1]->doCallback();
+  d->setValue((255==value) ? 255 : (value+1));
+  d->triggerCallback();
 }
 
 void Espalexa::respondToSearch(void)
@@ -403,10 +404,14 @@ String Espalexa::boolString(const bool st)
 bool Espalexa::connectUDP(void)
 {
 #ifdef ARDUINO_ARCH_ESP32
-  return UDP.beginMulticast(IP, port);
+  const bool ok = UDP.beginMulticast(IP, port);
 #else
-  return UDP.beginMulticast(WiFi.localIP(), IP, port);
+  const bool ok = UDP.beginMulticast(WiFi.localIP(), IP, port);
 #endif
+  if ( ok ) {
+    startHttpServer();
+  }
+  return ok;
 }
 
 //EspalexaDevice Class
@@ -414,18 +419,23 @@ bool Espalexa::connectUDP(void)
 EspalexaDevice::EspalexaDevice(void) :
 _deviceName(),
 _callback(NULL),
+_debounce(ALEXA_DEBOUNCE),
+_debounce_ts(0),
 _deviceID(0),
-_val(0),
+_val_curr(0),
 _val_last(0)
 {
 }
 
 EspalexaDevice::EspalexaDevice(
-  const char* deviceName, CallbackBriFunction callback, const uint8_t value) :
+  const char* deviceName, CallbackBriFunction callback, const uint8_t value,
+  const uint32_t debounce) :
 _deviceName(deviceName),
 _callback(callback),
+_debounce(debounce),
+_debounce_ts(0),
 _deviceID(0),
-_val(value),
+_val_curr(value),
 _val_last(value)
 { 
 }
@@ -446,7 +456,7 @@ void EspalexaDevice::setName(const String name)
 
 uint8_t EspalexaDevice::getValue(void)
 {
-  return _val;
+  return _val_curr;
 }
 
 uint8_t EspalexaDevice::getLastValue(void)
@@ -456,13 +466,13 @@ uint8_t EspalexaDevice::getLastValue(void)
 
 void EspalexaDevice::setValue(const uint8_t val)
 {
-  if (_val != 0) {
-    _val_last = _val;
+  if (_val_curr != 0) {
+    _val_last = _val_curr;
   }
-  if (val != 0) {
-    _val_last = val;
+  _val_curr = val;
+  if (_val_curr != 0) {
+    _val_last = _val_curr;
   }
-  _val = val;
 }
 
 uint8_t EspalexaDevice::getID(void)
@@ -475,7 +485,23 @@ void EspalexaDevice::setID(const uint8_t id)
   _deviceID = id;
 }
 
-void EspalexaDevice::doCallback(void)
+void EspalexaDevice::triggerCallback(void)
 {
-  _callback(_deviceID, _deviceName.c_str(), _val);
+  DEBUG("triggerCallback on device ");
+  DEBUGLN(_deviceName);
+
+  _debounce_ts = millis();
+  if ( 0==_debounce_ts ) {
+    _debounce_ts = 1;
+  }
+}
+
+void EspalexaDevice::executeCallback(void)
+{
+  if ( _debounce_ts && (millis()>=_debounce_ts+_debounce) ) {
+    DEBUG("executeCallback on device ");
+    DEBUGLN(_deviceName);
+    _callback(_deviceID, _deviceName.c_str(), _val_curr);
+    _debounce_ts = 0;
+  }
 }

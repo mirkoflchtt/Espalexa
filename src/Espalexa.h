@@ -14,16 +14,20 @@ typedef ESP8266WebServer WebServer;
 
 // this limit only has memory reasons, set it higher should you need to
 #define ALEXA_MAX_DEVICES    (16) 
+#define ALEXA_DEBOUNCE      (250)
 
-typedef void (*CallbackBriFunction) (
-  const uint8_t deviceID, const char* deviceName, const uint8_t value);
+typedef void (*CallbackBriFunction)(const uint8_t deviceID,
+  const char* deviceName, const uint8_t value);
 
 class EspalexaDevice {
 private:
   String _deviceName;
   CallbackBriFunction _callback;
+  const uint32_t _debounce;
+  unsigned long _debounce_ts;
   uint8_t _deviceID;
-  uint8_t _val, _val_last;
+  uint8_t _val_curr;
+  uint8_t _val_last;
 
 public:
   EspalexaDevice(void);
@@ -31,7 +35,8 @@ public:
   EspalexaDevice(
     const char* deviceName,
     CallbackBriFunction callback,
-    const uint8_t value=0);
+    const uint8_t value=0,
+    const uint32_t debounce=ALEXA_DEBOUNCE);
     
   String   getName(void);
   void     setName(const String name);
@@ -42,9 +47,10 @@ public:
   uint8_t  getID(void);
   void     setID(const uint8_t id);
 
-  void     doCallback(void);
+  void     triggerCallback(void);
+  void     executeCallback(void);
   
-  uint8_t  getLastValue(void); //last value that was not off (1-255)
+  uint8_t  getLastValue(void); // last value that was not off (1-255)
 };
 
 class Espalexa {
